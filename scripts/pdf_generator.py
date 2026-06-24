@@ -17,9 +17,9 @@ from reportlab.lib.enums import TA_RIGHT, TA_CENTER
 
 # ── HRH constants ─────────────────────────────────────────────────────────────
 HRH_NAME  = "High Ridge Hydroponics LLC"
-HRH_ADDR1 = "431 High Ridge Road"
-HRH_CITY  = "Stamford, CT 06905"
-HRH_PHONE = "(203) 209-2284"
+HRH_ADDR1 = "1 1/2 Island Brook Avenue, Building B"
+HRH_CITY  = "Bridgeport, CT 06606"
+HRH_PHONE = "203-788-5180"
 HRH_EMAIL = "highridgehydroponics@gmail.com"
 
 # ── Design tokens ─────────────────────────────────────────────────────────────
