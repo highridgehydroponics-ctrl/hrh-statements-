@@ -7,7 +7,7 @@ import os
 import requests
 from datetime import date, timedelta
 
-SQUARE_BASE_URL    = "https://connect.squareup.com/v2"
+SQUARE_BASE_URL     = "https://connect.squareup.com/v2"
 SQUARE_ACCESS_TOKEN = os.environ["SQUARE_ACCESS_TOKEN"]
 SQUARE_LOCATION_ID  = os.environ.get("SQUARE_LOCATION_ID", "BYZ5P0549Z01F")
 LOOKBACK_DAYS       = int(os.environ.get("LOOKBACK_DAYS", "365"))
@@ -56,6 +56,8 @@ def _normalize_invoice(inv: dict) -> dict | None:
         "url":        inv.get("public_url", ""),
         "status":     status,
         "cust_id":    cust_id,
+        "order_id":   inv.get("order_id", ""),
+        "line_items": [],
     }
 
 
@@ -77,10 +79,6 @@ def get_customer(customer_id: str) -> dict:
 
 
 def get_all_unpaid_invoices() -> dict[str, list[dict]]:
-    """
-    Page through ALL location invoices.
-    Returns { customer_id: [normalized invoice, ...] }.
-    """
     cutoff      = (date.today() - timedelta(days=LOOKBACK_DAYS)).isoformat()
     params      = {"location_id": SQUARE_LOCATION_ID, "limit": 200}
     by_customer: dict[str, list] = {}
@@ -110,3 +108,39 @@ def get_all_unpaid_invoices() -> dict[str, list[dict]]:
         by_customer[cid].sort(key=lambda x: x["date"])
 
     return by_customer
+
+
+def get_line_items_for_orders(order_ids: list[str]) -> dict[str, list[dict]]:
+    """
+    Batch-fetch Square orders and return their line items.
+    Returns { order_id: [ {name, quantity, unit_price, total}, ... ] }
+    Square batch-retrieve accepts up to 100 order IDs at a time.
+    """
+    if not order_ids:
+        return {}
+
+    result: dict[str, list] = {}
+    chunk_size = 100
+    for i in range(0, len(order_ids), chunk_size):
+        chunk = order_ids[i : i + chunk_size]
+        try:
+            data = _post("/orders/batch-retrieve", {"order_ids": chunk})
+        except Exception as e:
+            print(f"  Warning: could not fetch orders batch: {e}")
+            continue
+        for order in data.get("orders", []):
+            oid   = order.get("id", "")
+            items = []
+            for li in order.get("line_items", []):
+                unit_price = li.get("base_price_money", {}).get("amount", 0) / 100
+                qty        = li.get("quantity", "1")
+                total      = li.get("total_money",      {}).get("amount", 0) / 100
+                items.append({
+                    "name":       li.get("name", "Microgreens"),
+                    "quantity":   qty,
+                    "unit_price": unit_price,
+                    "total":      total,
+                })
+            result[oid] = items
+
+    return result
