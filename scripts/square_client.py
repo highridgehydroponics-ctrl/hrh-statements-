@@ -79,6 +79,10 @@ def get_customer(customer_id: str) -> dict:
 
 
 def get_all_unpaid_invoices() -> dict[str, list[dict]]:
+    """
+    Page through ALL location invoices.
+    Returns { customer_id: [normalized invoice, ...] }.
+    """
     cutoff      = (date.today() - timedelta(days=LOOKBACK_DAYS)).isoformat()
     params      = {"location_id": SQUARE_LOCATION_ID, "limit": 200}
     by_customer: dict[str, list] = {}
@@ -111,36 +115,20 @@ def get_all_unpaid_invoices() -> dict[str, list[dict]]:
 
 
 def get_line_items_for_orders(order_ids: list[str]) -> dict[str, list[dict]]:
-    """
-    Batch-fetch Square orders and return their line items.
-    Returns { order_id: [ {name, quantity, unit_price, total}, ... ] }
-    Square batch-retrieve accepts up to 100 order IDs at a time.
-    """
-    if not order_ids:
-        return {}
-
-    result: dict[str, list] = {}
-    chunk_size = 100
-    for i in range(0, len(order_ids), chunk_size):
-        chunk = order_ids[i : i + chunk_size]
-        try:
-            data = _post("/orders/batch-retrieve", {"order_ids": chunk})
-        except Exception as e:
-            print(f"  Warning: could not fetch orders batch: {e}")
-            continue
+    """Batch-fetch Square orders and return their line items. Chunks at 100."""
+    result = {}
+    for i in range(0, len(order_ids), 100):
+        chunk = order_ids[i:i + 100]
+        data  = _post("/orders/batch-retrieve", {"order_ids": chunk})
         for order in data.get("orders", []):
             oid   = order.get("id", "")
             items = []
             for li in order.get("line_items", []):
-                unit_price = li.get("base_price_money", {}).get("amount", 0) / 100
-                qty        = li.get("quantity", "1")
-                total      = li.get("total_money",      {}).get("amount", 0) / 100
                 items.append({
                     "name":       li.get("name", "Microgreens"),
-                    "quantity":   qty,
-                    "unit_price": unit_price,
-                    "total":      total,
+                    "quantity":   li.get("quantity", "1"),
+                    "unit_price": li.get("base_price_money", {}).get("amount", 0) / 100,
+                    "total":      li.get("total_money", {}).get("amount", 0) / 100,
                 })
             result[oid] = items
-
     return result
