@@ -85,7 +85,7 @@ def run():
         b0, b1, b2, b3 = _aging(invoices, today)
         fname    = _pdf_filename(cust, yyyymm)
         pdf_path = os.path.join(PDF_DIR, fname)
-        pdf_url  = f"pdfs/{fname}"
+        pdf_url  = f"pdfs/{fname}"   # relative URL for GitHub Pages
 
         results.append({
             "cust_id":       cid,
@@ -108,15 +108,17 @@ def run():
 
     if not results:
         print("No outstanding balances found.")
+        # Write an empty dashboard so the page doesn't 404
         generate_dashboard([], DASHBOARD)
         return
 
-    # Sort highest balance first, re-number
+    # Sort highest balance first, re-number statement numbers
     results.sort(key=lambda r: r["total"], reverse=True)
     for i, r in enumerate(results, 1):
         r["stmt_no"] = f"{STMT_PREFIX}-{yyyymm}-{i:03d}"
 
     # ── Enrich invoices with line items ──────────────────────────────────────
+    print("\nFetching line items for all orders…")
     all_order_ids = [
         inv["order_id"]
         for r in results
@@ -124,13 +126,17 @@ def run():
         if inv.get("order_id")
     ]
     if all_order_ids:
-        print(f"\nFetching line items for {len(all_order_ids)} invoice(s)…")
         order_items = get_line_items_for_orders(all_order_ids)
+        enriched = 0
         for r in results:
             for inv in r["invoices"]:
                 oid = inv.get("order_id", "")
                 if oid and oid in order_items:
                     inv["line_items"] = order_items[oid]
+                    enriched += 1
+        print(f"  Enriched {enriched} invoice(s) with line items")
+    else:
+        print("  No order IDs found — line items will be empty")
 
     # ── Generate PDFs ────────────────────────────────────────────────────────
     print(f"\nGenerating {len(results)} PDF(s)…")
