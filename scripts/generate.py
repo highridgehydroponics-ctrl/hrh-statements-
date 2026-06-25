@@ -17,7 +17,7 @@ import os
 import sys
 from datetime import date
 
-from square_client import get_customer, get_all_unpaid_invoices
+from square_client import get_customer, get_all_unpaid_invoices, get_line_items_for_orders
 from pdf_generator import generate_pdf
 from dashboard import generate_dashboard
 
@@ -85,7 +85,7 @@ def run():
         b0, b1, b2, b3 = _aging(invoices, today)
         fname    = _pdf_filename(cust, yyyymm)
         pdf_path = os.path.join(PDF_DIR, fname)
-        pdf_url  = f"pdfs/{fname}"   # relative URL for GitHub Pages
+        pdf_url  = f"pdfs/{fname}"
 
         results.append({
             "cust_id":       cid,
@@ -108,14 +108,29 @@ def run():
 
     if not results:
         print("No outstanding balances found.")
-        # Write an empty dashboard so the page doesn't 404
         generate_dashboard([], DASHBOARD)
         return
 
-    # Sort highest balance first, re-number statement numbers
+    # Sort highest balance first, re-number
     results.sort(key=lambda r: r["total"], reverse=True)
     for i, r in enumerate(results, 1):
         r["stmt_no"] = f"{STMT_PREFIX}-{yyyymm}-{i:03d}"
+
+    # ── Enrich invoices with line items ──────────────────────────────────────
+    all_order_ids = [
+        inv["order_id"]
+        for r in results
+        for inv in r["invoices"]
+        if inv.get("order_id")
+    ]
+    if all_order_ids:
+        print(f"\nFetching line items for {len(all_order_ids)} invoice(s)…")
+        order_items = get_line_items_for_orders(all_order_ids)
+        for r in results:
+            for inv in r["invoices"]:
+                oid = inv.get("order_id", "")
+                if oid and oid in order_items:
+                    inv["line_items"] = order_items[oid]
 
     # ── Generate PDFs ────────────────────────────────────────────────────────
     print(f"\nGenerating {len(results)} PDF(s)…")
