@@ -47,7 +47,9 @@ def _normalize_invoice(inv: dict) -> dict | None:
     amount  = round(total - paid, 2)
     if amount <= 0:
         return None
-    cust_id = inv.get("primary_recipient", {}).get("customer_id")
+    recipient = inv.get("primary_recipient", {})
+    cust_id   = recipient.get("customer_id")
+    email     = recipient.get("email_address", "")
     return {
         "invoice_id": inv["id"],
         "id":         inv.get("invoice_number", ""),
@@ -56,6 +58,7 @@ def _normalize_invoice(inv: dict) -> dict | None:
         "url":        inv.get("public_url", ""),
         "status":     status,
         "cust_id":    cust_id,
+        "email":      email,
         "order_id":   inv.get("order_id", ""),
         "line_items": [],
     }
