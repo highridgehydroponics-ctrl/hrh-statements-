@@ -1,165 +1,229 @@
 """
-generate.py — main entrypoint for HRH account statements.
+generate.py — Main entrypoint for HRH Statements Dashboard.
 
-Called by the GitHub Action. Outputs:
-  docs/index.html            — aging dashboard
-  docs/pdfs/<name>.pdf       — one PDF per customer with outstanding balance
-
-Required environment variable:
-  SQUARE_ACCESS_TOKEN        — your Square production access token
-
-Optional environment variables (have sensible defaults):
-  SQUARE_LOCATION_ID         — defaults to BYZ5P0549Z01F
-  LOOKBACK_DAYS              — how far back to search invoices (default 365)
+Pipeline:
+  1. Fetch all unpaid Square invoices (flat list)
+  2. Fetch AppSheet invoice→client mapping (invoice_number → appsheet_client_id)
+  3. Fetch AppSheet client details (client_id → name/address/email/phone)
+  4. Enrich each invoice with its AppSheet client_id
+  5. Group invoices by AppSheet client_id
+     - Fallback: group by Square customer_id if no AppSheet match
+  6. Compute aging buckets per customer group
+  7. Sort by total balance descending, assign statement numbers
+  8. Batch-fetch Square order line items
+  9. Generate PDFs
+ 10. Generate HTML dashboard
 """
 
 import os
-import sys
-from datetime import date
+import re
+from datetime import date, datetime
+from collections import defaultdict
 
-from square_client import get_customer, get_all_unpaid_invoices, get_line_items_for_orders
+from square_client import (
+    get_all_unpaid_invoices,
+    get_customer,
+    get_line_items_for_orders,
+    get_appsheet_clients,
+    get_appsheet_invoice_client_map,
+)
 from pdf_generator import generate_pdf
 from dashboard import generate_dashboard
 
-# ── Config ────────────────────────────────────────────────────────────────────
-DOCS_DIR    = os.path.join(os.path.dirname(__file__), "..", "docs")
-PDF_DIR     = os.path.join(DOCS_DIR, "pdfs")
-DASHBOARD   = os.path.join(DOCS_DIR, "index.html")
-STMT_PREFIX = "HRH"
-MIN_BALANCE = 0.01
+DOCS_DIR = os.path.join(os.path.dirname(__file__), "..", "docs")
+PDFS_DIR = os.path.join(DOCS_DIR, "pdfs")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _aging(invoices, today):
-    b0 = b1 = b2 = b3 = 0.0
-    for inv in invoices:
-        d   = inv["date"]
-        age = (today - date(int(d[:4]), int(d[5:7]), int(d[8:10]))).days
-        if   age <= 30: b0 += inv["amount"]
-        elif age <= 60: b1 += inv["amount"]
-        elif age <= 90: b2 += inv["amount"]
-        else:           b3 += inv["amount"]
-    return round(b0,2), round(b1,2), round(b2,2), round(b3,2)
+def safe_filename(name):
+    """Convert a name to a safe filename slug."""
+    s = re.sub(r"[^\w\s-]", "", name)
+    s = re.sub(r"[\s]+", "_", s.strip())
+    return s[:80]
 
 
-def _safe(s):
-    for ch in (" ", "/", "'", ",", "&"):
-        s = s.replace(ch, "_")
-    return s.strip("_")
+def age_bucket(invoice_date_str):
+    """Return number of days since invoice date."""
+    try:
+        inv_date = datetime.strptime(invoice_date_str, "%Y-%m-%d").date()
+        return (date.today() - inv_date).days
+    except Exception:
+        return 0
 
 
-def _pdf_filename(cust, yyyymm):
-    if cust["company_name"]:
-        return f"{_safe(cust['name'])}_{_safe(cust['company_name'])}_Statement_{yyyymm}.pdf"
-    return f"{_safe(cust['name'])}_Statement_{yyyymm}.pdf"
+def main():
+    os.makedirs(PDFS_DIR, exist_ok=True)
 
+    print("Fetching unpaid Square invoices...")
+    all_invoices = get_all_unpaid_invoices()
+    print(f"  Found {len(all_invoices)} unpaid/partially-paid invoices")
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+    # ── Step 2: AppSheet invoice→client mapping ──────────────────────────────
+    print("Fetching AppSheet invoice→client mapping...")
+    try:
+        inv_client_map = get_appsheet_invoice_client_map()
+        print(f"  Mapped {len(inv_client_map)} invoices to AppSheet clients")
+    except Exception as e:
+        print(f"  WARNING: Could not fetch AppSheet order mapping: {e}")
+        inv_client_map = {}
 
-def run():
-    os.makedirs(PDF_DIR,  exist_ok=True)
-    os.makedirs(DOCS_DIR, exist_ok=True)
+    # ── Step 3: AppSheet client details ─────────────────────────────────────
+    print("Fetching AppSheet client details...")
+    try:
+        appsheet_clients = get_appsheet_clients()
+        print(f"  Found {len(appsheet_clients)} AppSheet clients")
+    except Exception as e:
+        print(f"  WARNING: Could not fetch AppSheet clients: {e}")
+        appsheet_clients = {}
 
-    today  = date.today()
-    yyyymm = today.strftime("%Y%m")
+    # ── Step 4: Enrich each invoice with AppSheet client_id ──────────────────
+    for inv in all_invoices:
+        inv_num = inv["id"].lstrip("0") or inv["id"]  # strip leading zeros for lookup
+        # Try exact match first, then zero-stripped match
+        appsheet_cid = (
+            inv_client_map.get(inv["id"])
+            or inv_client_map.get(inv_num)
+        )
+        inv["appsheet_client_id"] = appsheet_cid
 
-    print("Fetching all unpaid invoices from Square…")
-    raw_map = get_all_unpaid_invoices()
-    print(f"  Found balances for {len(raw_map)} customer(s)")
+    # ── Step 5: Group by AppSheet client_id (with fallback) ──────────────────
+    # Primary key: appsheet_client_id
+    # Fallback key: "sq_<cust_id>" (Square customer ID) when no AppSheet match
+    groups = defaultdict(list)  # key → [invoice, ...]
 
-    # ── Build result rows ────────────────────────────────────────────────────
+    for inv in all_invoices:
+        if inv["appsheet_client_id"]:
+            key = inv["appsheet_client_id"]
+        else:
+            key = f"sq_{inv['cust_id']}"
+        groups[key].append(inv)
+
+    print(f"  Grouped into {len(groups)} customer statements")
+
+    # ── Step 6: Build customer result objects ────────────────────────────────
+    today = date.today()
     results = []
-    for seq, (cid, invoices) in enumerate(raw_map.items(), 1):
-        if not invoices:
-            continue
-        total = round(sum(i["amount"] for i in invoices), 2)
-        if total < MIN_BALANCE:
-            continue
 
-        print(f"  Looking up customer {cid}…", end=" ", flush=True)
-        cust = get_customer(cid)
-        display = cust["company_name"] or cust["name"]
-        print(display)
+    # Cache Square customer lookups to avoid repeated API calls
+    _square_customer_cache = {}
 
-        b0, b1, b2, b3 = _aging(invoices, today)
-        fname    = _pdf_filename(cust, yyyymm)
-        pdf_path = os.path.join(PDF_DIR, fname)
-        pdf_url  = f"pdfs/{fname}"   # relative URL for GitHub Pages
+    def get_square_customer_cached(cust_id):
+        if cust_id not in _square_customer_cache:
+            try:
+                _square_customer_cache[cust_id] = get_customer(cust_id)
+            except Exception as e:
+                print(f"  WARNING: Could not fetch Square customer {cust_id}: {e}")
+                _square_customer_cache[cust_id] = {
+                    "name": cust_id, "company": "", "email": "", "phone": "", "address": ""
+                }
+        return _square_customer_cache[cust_id]
+
+    for key, invoices in groups.items():
+        total = round(sum(inv["amount"] for inv in invoices), 2)
+        if total <= 0:
+            continue  # skip zero-balance groups
+
+        # ── Resolve customer info ────────────────────────────────────────────
+        is_appsheet_key = not key.startswith("sq_")
+
+        if is_appsheet_key and key in appsheet_clients:
+            ac = appsheet_clients[key]
+            customer_name    = ac["name"] or key
+            customer_email   = ac["email"]
+            customer_phone   = ac["phone"]
+            customer_address = ac["address"]
+        else:
+            # Fallback: pull from Square customer record
+            sq_cust_id = invoices[0]["cust_id"] if invoices else ""
+            sq_info = get_square_customer_cached(sq_cust_id) if sq_cust_id else {}
+            customer_name    = sq_info.get("company") or sq_info.get("name") or sq_cust_id
+            customer_email   = sq_info.get("email", "")
+            customer_phone   = sq_info.get("phone", "")
+            customer_address = sq_info.get("address", "")
+
+        if not customer_name:
+            customer_name = key  # last-resort label
+
+        # ── Aging buckets ────────────────────────────────────────────────────
+        buckets = {"0_30": 0.0, "31_60": 0.0, "61_90": 0.0, "over_90": 0.0}
+        for inv in invoices:
+            days = age_bucket(inv["date"])
+            inv["age_days"] = days
+            if days <= 30:
+                buckets["0_30"] += inv["amount"]
+            elif days <= 60:
+                buckets["31_60"] += inv["amount"]
+            elif days <= 90:
+                buckets["61_90"] += inv["amount"]
+            else:
+                buckets["over_90"] += inv["amount"]
+
+        # Sort invoices oldest → newest
+        invoices_sorted = sorted(invoices, key=lambda x: x["date"])
 
         results.append({
-            "cust_id":       cid,
-            "name":          cust["name"],
-            "company_name":  display,
-            "email":         cust["email"],
-            "phone":         cust["phone"],
-            "stmt_no":       f"{STMT_PREFIX}-{yyyymm}-{seq:03d}",
-            "invoices":      invoices,
-            "invoice_count": len(invoices),
-            "total":         total,
-            "b0_30":         b0,
-            "b31_60":        b1,
-            "b61_90":        b2,
-            "b90plus":       b3,
-            "pdf_url":       pdf_url,
-            "_pdf_path":     pdf_path,
-            "_cust":         cust,
+            "key":             key,
+            "appsheet_id":     key if is_appsheet_key else None,
+            "customer_name":   customer_name,
+            "customer_email":  customer_email,
+            "customer_phone":  customer_phone,
+            "customer_address":customer_address,
+            "total":           total,
+            "buckets":         {k: round(v, 2) for k, v in buckets.items()},
+            "invoices":        invoices_sorted,
         })
 
-    if not results:
-        print("No outstanding balances found.")
-        # Write an empty dashboard so the page doesn't 404
-        generate_dashboard([], DASHBOARD)
-        return
+    # ── Step 7: Sort by total descending, assign statement numbers ────────────
+    results.sort(key=lambda x: x["total"], reverse=True)
+    for i, r in enumerate(results, start=1):
+        r["statement_id"] = f"STMT-{i:03d}"
 
-    # Sort highest balance first, re-number statement numbers
-    results.sort(key=lambda r: r["total"], reverse=True)
-    for i, r in enumerate(results, 1):
-        r["stmt_no"] = f"{STMT_PREFIX}-{yyyymm}-{i:03d}"
+    print(f"  {len(results)} non-zero statements to generate")
 
-    # ── Enrich invoices with line items ──────────────────────────────────────
-    print("\nFetching line items for all orders…")
+    # ── Step 8: Batch-fetch Square line items ────────────────────────────────
+    print("Fetching Square order line items...")
     all_order_ids = [
         inv["order_id"]
         for r in results
         for inv in r["invoices"]
         if inv.get("order_id")
     ]
-    if all_order_ids:
-        order_items = get_line_items_for_orders(all_order_ids)
-        enriched = 0
-        for r in results:
-            for inv in r["invoices"]:
-                oid = inv.get("order_id", "")
-                if oid and oid in order_items:
-                    inv["line_items"] = order_items[oid]
-                    enriched += 1
-        print(f"  Enriched {enriched} invoice(s) with line items")
-    else:
-        print("  No order IDs found — line items will be empty")
+    line_items_map = get_line_items_for_orders(list(set(all_order_ids)))
 
-    # ── Generate PDFs ────────────────────────────────────────────────────────
-    print(f"\nGenerating {len(results)} PDF(s)…")
     for r in results:
+        for inv in r["invoices"]:
+            oid = inv.get("order_id", "")
+            inv["line_items"] = line_items_map.get(oid, [])
+
+    # ── Step 9: Generate PDFs ────────────────────────────────────────────────
+    print("Generating PDFs...")
+    for r in results:
+        # Use AppSheet client_id in filename to guarantee uniqueness
+        # even if two customers share the same display name
+        name_slug = safe_filename(r["customer_name"])
+        unique_slug = r["appsheet_id"] or safe_filename(r["key"])
+        filename = f"{name_slug}__{unique_slug}.pdf"
+        pdf_path = os.path.join(PDFS_DIR, filename)
+        r["pdf_filename"] = filename
+
         try:
-            generate_pdf(r["_pdf_path"], r["_cust"], r["invoices"], r["stmt_no"])
-            print(f"  ✓  {r['company_name']:<40} ${r['total']:>9,.2f}")
+            generate_pdf(r, pdf_path)
         except Exception as e:
-            print(f"  ✗  {r['company_name']}: {e}", file=sys.stderr)
+            print(f"  ERROR generating PDF for {r['customer_name']}: {e}")
+            r["pdf_filename"] = None
 
-    # ── Generate dashboard ───────────────────────────────────────────────────
-    generate_dashboard(results, DASHBOARD)
+    # ── Step 10: Generate HTML dashboard ────────────────────────────────────
+    print("Generating dashboard...")
+    dashboard_path = os.path.join(DOCS_DIR, "index.html")
+    generate_dashboard(results, dashboard_path)
 
-    # ── Summary ──────────────────────────────────────────────────────────────
-    grand_total = sum(r["total"] for r in results)
-    grand_inv   = sum(r["invoice_count"] for r in results)
-    print(f"\n{'─' * 55}")
-    print(f"  Customers : {len(results)}")
-    print(f"  Invoices  : {grand_inv}")
-    print(f"  Total AR  : ${grand_total:,.2f}")
-    print(f"  Dashboard : {DASHBOARD}")
-    print(f"  PDFs      : {PDF_DIR}/")
+    total_ar = sum(r["total"] for r in results)
+    total_invoices = sum(len(r["invoices"]) for r in results)
+    print(
+        f"\nDone — {len(results)} statements, "
+        f"{total_invoices} invoices, "
+        f"${total_ar:,.2f} total AR"
+    )
 
 
 if __name__ == "__main__":
-    run()
+    main()
