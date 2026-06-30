@@ -1,288 +1,274 @@
 """
 pdf_generator.py — ReportLab PDF statement builder for HRH.
-Format matches the HRH HTML statement template (blue theme).
+Format matches the generate-account-statement skill spec exactly.
 """
 
-import os
-from datetime import date
-from reportlab.lib import colors
+from datetime import date as _date
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 from reportlab.lib.units import inch
 from reportlab.platypus import (
-    SimpleDocTemplate, Table, TableStyle, Paragraph,
-    Spacer, HRFlowable
+    SimpleDocTemplate, Table, TableStyle,
+    Spacer, Paragraph, HRFlowable
 )
-from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_RIGHT, TA_CENTER
 
-# ── HRH Constants ──────────────────────────────────────────────────────────
-HRH_NAME  = "High Ridge Hydroponics LLC"
-HRH_ADDR1 = "1 1/2 Island Brook Avenue, Building B"
-HRH_CITY  = "Bridgeport, CT 06606"
-HRH_PHONE = "203-788-5180"
-HRH_EMAIL = "highridgehydroponics@gmail.com"
+# ── Colors ──────────────────────────────────────────────────────────────────
+HRH_BLUE    = colors.HexColor("#1565C0")
+LIGHT_BLUE  = colors.HexColor("#E3F2FD")
+MID_BLUE    = colors.HexColor("#BBDEFB")
+WHITE       = colors.white
+DARK        = colors.HexColor("#1A1A1A")
+GREY        = colors.HexColor("#555555")
+LIGHT_GREY  = colors.HexColor("#F5F5F5")
 
-# ── Color palette — Material Blue (matches HTML template) ──────────────────
-PRIMARY_BLUE   = colors.HexColor("#1565C0")   # header, title, amounts
-LIGHT_BLUE_BG  = colors.HexColor("#E3F2FD")   # tfoot row, card backgrounds
-MED_BLUE_BDR   = colors.HexColor("#BBDEFB")   # borders / separators
-DARK_TEXT      = colors.HexColor("#1a1a1a")
-MED_GRAY       = colors.HexColor("#666666")
-ROW_BORDER     = colors.HexColor("#e8eef4")
+PAGE_W, PAGE_H = letter
+MARGIN = 0.55 * inch
 
-# Aging bucket colors (hex strings for Paragraph markup)
-_C_0_30   = "#2e7d32"   # green
-_C_31_60  = "#f57f17"   # amber
-_C_61_90  = "#e65100"   # dark orange
-_C_OVER90 = "#b71c1c"   # red
-_C_ZERO   = "#cccccc"   # gray for $0 buckets
+SS = getSampleStyleSheet()
 
-# ReportLab color objects for card values
-_RC_0_30   = colors.HexColor(_C_0_30)
-_RC_31_60  = colors.HexColor(_C_31_60)
-_RC_61_90  = colors.HexColor(_C_61_90)
-_RC_OVER90 = colors.HexColor(_C_OVER90)
-_RC_ZERO   = colors.HexColor(_C_ZERO)
+
+def _ps(name, **kw):
+    return ParagraphStyle(name, parent=SS["Normal"], **kw)
+
+
+# ── Shared styles ────────────────────────────────────────────────────────────
+sNorm    = _ps("norm",    fontSize=10, textColor=DARK)
+sBold    = _ps("bold",    fontSize=10, textColor=DARK,  fontName="Helvetica-Bold")
+sBoldR   = _ps("boldR",   fontSize=10, textColor=DARK,  fontName="Helvetica-Bold", alignment=TA_RIGHT)
+sWhiteB  = _ps("whiteB",  fontSize=10, textColor=WHITE, fontName="Helvetica-Bold")
+sWhiteR  = _ps("whiteR",  fontSize=10, textColor=WHITE, fontName="Helvetica-Bold", alignment=TA_RIGHT)
+sLink    = _ps("link",    fontSize=9,  textColor=HRH_BLUE, fontName="Helvetica-Bold", alignment=TA_CENTER)
+sSmall   = _ps("small",   fontSize=8,  textColor=GREY)
+sStmtLbl = _ps("stmtLbl", fontSize=10, textColor=DARK,  fontName="Helvetica-Bold", alignment=TA_RIGHT)
+sStmtVal = _ps("stmtVal", fontSize=10, textColor=DARK,  alignment=TA_RIGHT)
+sPayable = _ps("payable", fontSize=10, textColor=DARK,  fontName="Helvetica-Bold", alignment=TA_CENTER)
+sPayAddr = _ps("payaddr", fontSize=9,  textColor=DARK,  alignment=TA_CENTER)
+sCompany = _ps("company", fontSize=14, textColor=HRH_BLUE, fontName="Helvetica-Bold")
+
+
+def _fmt_date(d):
+    """YYYY-MM-DD → MM/DD/YYYY"""
+    try:
+        return f"{d[5:7]}/{d[8:10]}/{d[:4]}"
+    except Exception:
+        return d or "—"
 
 
 def _fmt_money(val):
     try:
-        return "$" + "{:,.2f}".format(float(val))
+        return "${:,.2f}".format(float(val))
     except Exception:
         return "$0.00"
 
 
-def _fmt_date(date_str):
-    """Convert YYYY-MM-DD to MM/DD/YYYY."""
-    try:
-        d = date.fromisoformat(date_str)
-        return d.strftime("%m/%d/%Y")
-    except Exception:
-        return date_str or "—"
-
-
-def _bucket_info(age_days):
-    """Return (label_str, hex_color_str) for an age in days."""
-    if age_days <= 30:
-        return "0-30d",   _C_0_30
-    elif age_days <= 60:
-        return "31-60d",  _C_31_60
-    elif age_days <= 90:
-        return "61-90d",  _C_61_90
-    else:
-        return "90+d",    _C_OVER90
-
-
-def _bucket_color_obj(val, rc):
-    """Return gray color if val is 0, otherwise rc."""
-    return _RC_ZERO if (not val or float(val) == 0) else rc
+def _add_border_and_footer(canvas, doc):
+    """Page-level callback: draws blue border + footer contact line."""
+    canvas.saveState()
+    canvas.setStrokeColor(HRH_BLUE)
+    canvas.setLineWidth(1.5)
+    canvas.rect(0.3 * inch, 0.3 * inch,
+                PAGE_W - 0.6 * inch, PAGE_H - 0.6 * inch)
+    canvas.setFont("Helvetica-Bold", 9)
+    canvas.setFillColor(DARK)
+    canvas.drawCentredString(
+        PAGE_W / 2, 0.45 * inch,
+        "Questions? Contact Joe Alvarez  |  (203) 788-5180  |  highridgehydroponics@gmail.com"
+    )
+    canvas.restoreState()
 
 
 def generate_pdf(customer_data, output_path):
     """
     Generate a single account statement PDF for one customer.
-    Matches the HRH HTML statement format exactly.
+
+    customer_data keys:
+      statement_id, customer_name, customer_email, customer_phone,
+      customer_address, total, buckets, invoices
     """
-    margin     = 0.6 * inch
-    content_w  = letter[0] - 2 * margin   # ~7.3 inches
+    today     = _date.today()
+    today_str = today.strftime("%m/%d/%Y")
+
+    total    = customer_data["total"]
+    b        = customer_data["buckets"]
+    buckets  = [b.get("0_30", 0), b.get("31_60", 0),
+                b.get("61_90", 0), b.get("over_90", 0)]
+    invoices = customer_data["invoices"]
+    stmt_no  = customer_data["statement_id"]
+
+    # Period string
+    dates  = [inv["date"] for inv in invoices if inv.get("date")]
+    if len(dates) > 1:
+        period = f"{_fmt_date(min(dates))} - {_fmt_date(max(dates))}"
+    elif dates:
+        period = _fmt_date(dates[0])
+    else:
+        period = today_str
 
     doc = SimpleDocTemplate(
         output_path,
         pagesize=letter,
-        leftMargin=margin,
-        rightMargin=margin,
-        topMargin=0.55 * inch,
+        leftMargin=MARGIN,
+        rightMargin=MARGIN,
+        topMargin=MARGIN,
         bottomMargin=0.6 * inch,
     )
+    els = []
 
-    # ── Styles ──────────────────────────────────────────────────────────────
-    def _ps(name, **kw):
-        return ParagraphStyle(name, **kw)
+    # ── Header ───────────────────────────────────────────────────────────────
+    farm_info = Table([
+        [Paragraph("High Ridge Hydroponics LLC", sCompany)],
+        [Paragraph("1 1/2 Island Brook Ave, BLDG B", sSmall)],
+        [Paragraph("Bridgeport, CT 06606", sSmall)],
+    ], colWidths=[4.55 * inch])
+    farm_info.setStyle(TableStyle([
+        ("TOPPADDING",    (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+    ]))
 
-    s_hrh     = _ps("hrh",  fontSize=7.5, textColor=MED_GRAY,  alignment=TA_RIGHT)
-    s_title   = _ps("title",fontSize=13,  textColor=PRIMARY_BLUE, fontName="Helvetica-Bold", spaceAfter=3)
-    s_sub     = _ps("sub",  fontSize=8.5, textColor=MED_GRAY,  spaceAfter=8)
-    s_card_lbl= _ps("clbl", fontSize=6.5, textColor=MED_GRAY,  fontName="Helvetica-Bold",
-                    alignment=TA_CENTER, spaceAfter=2)
-    s_tbl_hdr = _ps("thdr", fontSize=7.5, textColor=colors.white,
-                    fontName="Helvetica-Bold", alignment=TA_CENTER)
-    s_cell    = _ps("cell", fontSize=8,   textColor=DARK_TEXT)
-    s_cell_r  = _ps("cr",   fontSize=8,   textColor=DARK_TEXT,  alignment=TA_RIGHT)
-    s_bold8   = _ps("b8",   fontSize=8,   fontName="Helvetica-Bold")
-    s_bold_r9 = _ps("br9",  fontSize=9,   fontName="Helvetica-Bold",
-                    textColor=PRIMARY_BLUE, alignment=TA_RIGHT)
-    s_foot_l  = _ps("ftl",  fontSize=8.5, fontName="Helvetica-Bold", alignment=TA_RIGHT)
-    s_link    = _ps("lnk",  fontSize=8,   textColor=PRIMARY_BLUE)
-    s_footer  = _ps("pgft", fontSize=7.5, textColor=MED_GRAY,   alignment=TA_CENTER)
+    stmt_info = Table([
+        [Paragraph("<b>ACCOUNT STATEMENT</b>", sStmtLbl)],
+        [Paragraph(f"Date: {today_str}",       sStmtVal)],
+        [Paragraph(f"Statement #: {stmt_no}",  sStmtVal)],
+        [Paragraph(f"Period: {period}",        sStmtVal)],
+    ], colWidths=[2.65 * inch])
+    stmt_info.setStyle(TableStyle([
+        ("TOPPADDING",    (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+    ]))
 
-    story = []
+    header = Table([[farm_info, stmt_info]],
+                   colWidths=[4.55 * inch, 2.65 * inch])
+    header.setStyle(TableStyle([
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("BACKGROUND",    (0, 0), (-1, -1), LIGHT_GREY),
+        ("TOPPADDING",    (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING",   (0, 0), (0, -1),  8),
+    ]))
+    els += [header,
+            HRFlowable(width="100%", thickness=2, color=HRH_BLUE),
+            Spacer(1, 0.15 * inch)]
 
-    # ── HRH Sender line ─────────────────────────────────────────────────────
-    story.append(Table(
-        [[Paragraph(HRH_NAME + "  |  " + HRH_EMAIL + "  |  " + HRH_PHONE, s_hrh)]],
-        colWidths=[content_w]
-    ))
-    story.append(Spacer(1, 3))
-    story.append(HRFlowable(width="100%", thickness=0.5, color=MED_BLUE_BDR, spaceAfter=5))
+    # ── Bill To + Aging ───────────────────────────────────────────────────────
+    name    = customer_data["customer_name"]
+    address = customer_data.get("customer_address", "")
+    phone   = customer_data.get("customer_phone", "")
+    email   = customer_data.get("customer_email", "")
 
-    # ── Title ───────────────────────────────────────────────────────────────
-    month_year = date.today().strftime("%B %Y")
-    story.append(Paragraph(
-        "Account Statement — " + customer_data["customer_name"] + " (" + month_year + ")",
-        s_title
-    ))
+    bill_rows = [
+        [Paragraph("<b>Bill To:</b>", sBold)],
+        [Paragraph(name, sNorm)],
+    ]
+    if address:
+        bill_rows.append([Paragraph(address, sNorm)])
+    if phone:
+        bill_rows.append([Paragraph(phone, sNorm)])
+    if email:
+        bill_rows.append([Paragraph(email, sNorm)])
 
-    # ── Subtitle (generated date + customer contact) ─────────────────────
-    parts = ["Generated " + date.today().strftime("%m/%d/%Y")]
-    if customer_data.get("customer_email"):
-        parts.append(customer_data["customer_email"])
-    if customer_data.get("customer_phone"):
-        parts.append(customer_data["customer_phone"])
-    story.append(Paragraph(" • ".join(parts), s_sub))
+    bill_tbl = Table(bill_rows, colWidths=[3.1 * inch])
+    bill_tbl.setStyle(TableStyle([
+        ("TOPPADDING",    (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
 
-    # ── Summary Cards ───────────────────────────────────────────────────────
-    b     = customer_data["buckets"]
-    total = customer_data["total"]
+    aging_tbl = Table([
+        [Paragraph("Account Aging Summary", sWhiteB), Paragraph("Balance", sWhiteR)],
+        [Paragraph("0 - 30 Days",   sBold), Paragraph(_fmt_money(buckets[0]), sBoldR)],
+        [Paragraph("31 - 60 Days",  sBold), Paragraph(_fmt_money(buckets[1]), sBoldR)],
+        [Paragraph("61 - 90 Days",  sBold), Paragraph(_fmt_money(buckets[2]), sBoldR)],
+        [Paragraph("90+ Days",      sBold), Paragraph(_fmt_money(buckets[3]), sBoldR)],
+        [Paragraph("<b>Total Balance Due</b>", sBold),
+         Paragraph(f"<b>{_fmt_money(total)}</b>", sBoldR)],
+    ], colWidths=[2.0 * inch, 1.2 * inch])
+    aging_tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0),  (-1, 0),  HRH_BLUE),
+        ("ROWBACKGROUNDS",(0, 1),  (-1, -2), [WHITE, LIGHT_BLUE]),
+        ("LINEABOVE",     (0, -1), (-1, -1), 1.2, HRH_BLUE),
+        ("BACKGROUND",    (0, -1), (-1, -1), MID_BLUE),
+        ("TOPPADDING",    (0, 0),  (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0),  (-1, -1), 5),
+        ("LEFTPADDING",   (0, 0),  (-1, -1), 6),
+        ("RIGHTPADDING",  (0, 0),  (-1, -1), 6),
+        ("GRID",          (0, 1),  (-1, -2), 0.4, colors.lightgrey),
+    ]))
 
-    card_gap  = 5
-    card_cols = 5
-    card_w    = (content_w - (card_cols - 1) * card_gap) / card_cols
+    side = Table([[bill_tbl, "", aging_tbl]],
+                 colWidths=[3.1 * inch, 0.5 * inch, 3.2 * inch])
+    side.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    els += [side, Spacer(1, 0.2 * inch)]
 
-    def _card(lbl, val, val_color):
-        inner = Table(
-            [[Paragraph(lbl,           s_card_lbl)],
-             [Paragraph(val,           ParagraphStyle("cv", fontSize=13,
-                                       textColor=val_color,
-                                       fontName="Helvetica-Bold",
-                                       alignment=TA_CENTER))]],
-            colWidths=[card_w],
-        )
-        inner.setStyle(TableStyle([
-            ("BACKGROUND",    (0, 0), (-1, -1), colors.white),
-            ("TOPPADDING",    (0, 0), (-1, -1), 7),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-            ("LEFTPADDING",   (0, 0), (-1, -1), 3),
-            ("RIGHTPADDING",  (0, 0), (-1, -1), 3),
-            ("BOX",           (0, 0), (-1, -1), 0.5, MED_BLUE_BDR),
-        ]))
-        return inner
-
-    b0  = b.get("0_30",  0)
-    b31 = b.get("31_60", 0)
-    b61 = b.get("61_90", 0)
-    b90 = b.get("over_90", 0)
-
-    cards_row = [[
-        _card("TOTAL AR",      _fmt_money(total), PRIMARY_BLUE),
-        _card("0–30 DAYS",   _fmt_money(b0),    _bucket_color_obj(b0,  _RC_0_30)),
-        _card("31–60 DAYS",  _fmt_money(b31),   _bucket_color_obj(b31, _RC_31_60)),
-        _card("61–90 DAYS",  _fmt_money(b61),   _bucket_color_obj(b61, _RC_61_90)),
-        _card("90+ DAYS",      _fmt_money(b90),   _bucket_color_obj(b90, _RC_OVER90)),
+    # ── Invoice Table ─────────────────────────────────────────────────────────
+    inv_rows = [[
+        Paragraph("<b>Date</b>",       sWhiteB),
+        Paragraph("<b>Invoice #</b>",  sWhiteB),
+        Paragraph("<b>Description</b>",sWhiteB),
+        Paragraph("<b>Amount</b>",     sWhiteR),
+        Paragraph("<b>Pay</b>",        sWhiteB),
     ]]
 
-    cards_tbl = Table(cards_row,
-                      colWidths=[card_w] * card_cols,
-                      spaceBefore=2, spaceAfter=10)
-    cards_tbl.setStyle(TableStyle([
-        ("LEFTPADDING",   (0, 0), (-1, -1), card_gap // 2),
-        ("RIGHTPADDING",  (0, 0), (-1, -1), card_gap // 2),
-        ("TOPPADDING",    (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-    ]))
-    story.append(cards_tbl)
-
-    # ── Invoice Table ────────────────────────────────────────────────────────
-    # Columns: # | Date | Invoice # | Description | Amount | Pay
-    col_w = [
-        0.27 * inch,   # #
-        0.87 * inch,   # Date
-        0.95 * inch,   # Invoice #
-        3.25 * inch,   # Description
-        0.97 * inch,   # Amount
-        0.89 * inch,   # Pay
-    ]
-    # Total ≈ 7.2" within 7.3" content width
-
-    inv_rows = [["#", "Date", "Invoice", "Description", "Amount", "Pay"]]
-
-    for i, inv in enumerate(customer_data["invoices"], start=1):
-        raw_num     = inv["id"]
-        display_num = raw_num.lstrip("0") or raw_num
-        date_str    = _fmt_date(inv.get("date", ""))
-        age_days    = inv.get("age_days", 0)
-        blabel, bcolor = _bucket_info(age_days)
-
-        desc_para = Paragraph(
-            "Microgreens <font color='" + bcolor + "'><b>[" + blabel + "]</b></font>",
-            s_cell
-        )
-
+    for inv in invoices:
         pay_url = inv.get("url", "")
         if pay_url:
             pay_cell = Paragraph(
-                "<link href='" + pay_url + "'><u>Pay Here</u></link>",
-                s_link
+                f'<link href="{pay_url}"><u>Pay Here</u></link>', sLink
             )
         else:
-            pay_cell = Paragraph("—", s_cell)
+            pay_cell = Paragraph("--", sNorm)
+
+        raw_num     = inv.get("id", "")
+        display_num = raw_num.lstrip("0") or raw_num
 
         inv_rows.append([
-            str(i),
-            date_str,
-            Paragraph("<b>" + display_num + "</b>", s_bold8),
-            desc_para,
-            _fmt_money(inv["amount"]),
+            Paragraph(_fmt_date(inv.get("date", "")), sBold),
+            Paragraph(display_num, sBold),
+            Paragraph("Microgreens", sBold),
+            Paragraph(_fmt_money(inv.get("amount", 0)), sBoldR),
             pay_cell,
         ])
 
-    # Footer row — spans columns 0-3 for "TOTAL DUE", amount in col 4
-    footer_row_idx = len(inv_rows)
+    # Total Due footer row
     inv_rows.append([
-        Paragraph("<b>TOTAL DUE</b>", s_foot_l),
         "", "", "",
-        Paragraph("<b>" + _fmt_money(total) + "</b>", s_bold_r9),
+        Paragraph(f"<b>TOTAL DUE<br/>{_fmt_money(total)}</b>", sBoldR),
         "",
     ])
 
-    inv_tbl = Table(inv_rows, colWidths=col_w, repeatRows=1)
+    inv_tbl = Table(
+        inv_rows,
+        colWidths=[0.9 * inch, 1.55 * inch, 2.25 * inch, 1.1 * inch, 1.0 * inch],
+    )
     inv_tbl.setStyle(TableStyle([
-        # ── Header row ──
-        ("BACKGROUND",    (0, 0), (-1, 0),               PRIMARY_BLUE),
-        ("TEXTCOLOR",     (0, 0), (-1, 0),               colors.white),
-        ("FONTNAME",      (0, 0), (-1, 0),               "Helvetica-Bold"),
-        ("FONTSIZE",      (0, 0), (-1, 0),               7.5),
-        ("ALIGN",         (0, 0), (-1, 0),               "CENTER"),
-        # ── Data rows ──
-        ("FONTSIZE",      (0, 1), (-1, footer_row_idx - 1), 8),
-        ("LINEBELOW",     (0, 1), (-1, footer_row_idx - 1), 0.5, ROW_BORDER),
-        # ── Alignment ──
-        ("ALIGN",         (0, 1), (0, -1),               "CENTER"),   # #
-        ("ALIGN",         (4, 0), (4, -1),               "RIGHT"),    # Amount
-        ("ALIGN",         (5, 0), (5, -1),               "CENTER"),   # Pay
-        # ── Footer row ──
-        ("BACKGROUND",    (0, footer_row_idx), (-1, footer_row_idx), LIGHT_BLUE_BG),
-        ("LINEABOVE",     (0, footer_row_idx), (-1, footer_row_idx), 1.5, PRIMARY_BLUE),
-        ("SPAN",          (0, footer_row_idx), (3, footer_row_idx)),
-        ("FONTNAME",      (0, footer_row_idx), (-1, footer_row_idx), "Helvetica-Bold"),
-        ("FONTSIZE",      (0, footer_row_idx), (-1, footer_row_idx), 8.5),
-        # ── Global ──
-        ("VALIGN",        (0, 0), (-1, -1),              "MIDDLE"),
-        ("TOPPADDING",    (0, 0), (-1, -1),              4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1),              4),
-        ("LEFTPADDING",   (0, 0), (-1, -1),              5),
-        ("RIGHTPADDING",  (0, 0), (-1, -1),              5),
+        ("BACKGROUND",    (0, 0),  (-1, 0),  HRH_BLUE),
+        ("ROWBACKGROUNDS",(0, 1),  (-1, -2), [WHITE, LIGHT_BLUE]),
+        ("GRID",          (0, 0),  (-1, -2), 0.4, colors.lightgrey),
+        ("LINEABOVE",     (0, -1), (-1, -1), 1.2, HRH_BLUE),
+        ("BACKGROUND",    (0, -1), (-1, -1), MID_BLUE),
+        ("TOPPADDING",    (0, 0),  (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0),  (-1, -1), 5),
+        ("LEFTPADDING",   (0, 0),  (-1, -1), 6),
+        ("RIGHTPADDING",  (0, 0),  (-1, -1), 6),
+        ("VALIGN",        (0, 0),  (-1, -1), "MIDDLE"),
     ]))
-    story.append(inv_tbl)
-    story.append(Spacer(1, 14))
+    els += [inv_tbl, Spacer(1, 0.2 * inch)]
 
-    # ── Page footer ─────────────────────────────────────────────────────────
-    story.append(HRFlowable(width="100%", thickness=0.5, color=MED_BLUE_BDR,
-                             spaceAfter=5))
-    story.append(Paragraph(
-        "<b>Please remit payment to:</b> " + HRH_NAME + " • " +
-        HRH_EMAIL + " • " + HRH_PHONE,
-        s_footer
-    ))
+    # ── Checks Payable ────────────────────────────────────────────────────────
+    payable_tbl = Table([
+        [Paragraph("Please make checks payable to:", sPayable)],
+        [Paragraph("<b>High Ridge Hydroponics LLC</b>", sPayable)],
+        [Paragraph("1 1/2 Island Brook Ave, BLDG B  —  Bridgeport, CT 06606", sPayAddr)],
+    ], colWidths=[7.2 * inch])
+    payable_tbl.setStyle(TableStyle([
+        ("TOPPADDING",    (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+    ]))
+    els.append(payable_tbl)
 
-    doc.build(story)
+    doc.build(
+        els,
+        onFirstPage=_add_border_and_footer,
+        onLaterPages=_add_border_and_footer,
+    )
