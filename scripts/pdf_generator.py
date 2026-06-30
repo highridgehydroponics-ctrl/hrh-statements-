@@ -21,18 +21,29 @@ HRH_CITY  = "Bridgeport, CT 06606"
 HRH_PHONE = "203-788-5180"
 HRH_EMAIL = "highridgehydroponics@gmail.com"
 
-# Brand color
-HRH_GREEN  = colors.HexColor("#2d6a4f")
-LIGHT_GRAY = colors.HexColor("#f5f5f5")
-MED_GRAY   = colors.HexColor("#cccccc")
-DARK_GRAY  = colors.HexColor("#444444")
+# Brand colors — blue theme
+HRH_BLUE    = colors.HexColor("#1e40af")   # deep blue (header/accents)
+LIGHT_BLUE  = colors.HexColor("#eff6ff")   # very light blue (row backgrounds)
+MED_BLUE    = colors.HexColor("#bfdbfe")   # medium blue (borders)
+LIGHT_GRAY  = colors.HexColor("#f5f5f5")   # fallback row bg
+MED_GRAY    = colors.HexColor("#cccccc")   # neutral borders
+DARK_GRAY   = colors.HexColor("#444444")
 
 
 def _fmt_money(val):
     try:
-        return f"${float(val):,.2f}"
+        return "$" + "{:,.2f}".format(float(val))
     except Exception:
         return "$0.00"
+
+
+def _fmt_date(date_str):
+    """Convert YYYY-MM-DD to MM/DD/YYYY."""
+    try:
+        d = date.fromisoformat(date_str)
+        return d.strftime("%m/%d/%Y")
+    except Exception:
+        return date_str or "—"
 
 
 def generate_pdf(customer_data, output_path):
@@ -54,9 +65,9 @@ def generate_pdf(customer_data, output_path):
 
     styles = getSampleStyleSheet()
     normal   = styles["Normal"]
-    h1_style = ParagraphStyle("h1", fontSize=16, textColor=HRH_GREEN,
+    h1_style = ParagraphStyle("h1", fontSize=16, textColor=HRH_BLUE,
                                spaceAfter=2, fontName="Helvetica-Bold")
-    h2_style = ParagraphStyle("h2", fontSize=10, textColor=HRH_GREEN,
+    h2_style = ParagraphStyle("h2", fontSize=10, textColor=HRH_BLUE,
                                spaceAfter=2, fontName="Helvetica-Bold",
                                spaceBefore=8)
     small    = ParagraphStyle("small", fontSize=8, textColor=DARK_GRAY,
@@ -73,9 +84,9 @@ def generate_pdf(customer_data, output_path):
     header_data = [[
         Paragraph(HRH_NAME, h1_style),
         Paragraph(
-            f"<b>ACCOUNT STATEMENT</b><br/>"
-            f"Statement #: {customer_data['statement_id']}<br/>"
-            f"Date: {date.today().strftime('%B %d, %Y')}",
+            "<b>ACCOUNT STATEMENT</b><br/>"
+            "Statement #: " + customer_data["statement_id"] + "<br/>"
+            "Date: " + date.today().strftime("%B %d, %Y"),
             right_sm
         ),
     ]]
@@ -88,8 +99,8 @@ def generate_pdf(customer_data, output_path):
 
     contact_data = [[
         Paragraph(
-            f"{HRH_ADDR1}<br/>{HRH_CITY}<br/>"
-            f"Phone: {HRH_PHONE}<br/>Email: {HRH_EMAIL}",
+            HRH_ADDR1 + "<br/>" + HRH_CITY + "<br/>"
+            "Phone: " + HRH_PHONE + "<br/>Email: " + HRH_EMAIL,
             small
         ),
         Paragraph("", small),
@@ -98,7 +109,7 @@ def generate_pdf(customer_data, output_path):
     contact_tbl.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     story.append(contact_tbl)
 
-    story.append(HRFlowable(width="100%", thickness=1, color=HRH_GREEN,
+    story.append(HRFlowable(width="100%", thickness=1, color=HRH_BLUE,
                              spaceAfter=8, spaceBefore=6))
 
     # ── Bill To ─────────────────────────────────────────────────────────────
@@ -128,16 +139,16 @@ def generate_pdf(customer_data, output_path):
     ]
     aging_tbl = Table(aging_data, colWidths=["20%", "20%", "20%", "20%", "20%"])
     aging_tbl.setStyle(TableStyle([
-        ("BACKGROUND",   (0, 0), (-1, 0),  HRH_GREEN),
-        ("TEXTCOLOR",    (0, 0), (-1, 0),  colors.white),
-        ("FONTNAME",     (0, 0), (-1, 0),  "Helvetica-Bold"),
-        ("FONTSIZE",     (0, 0), (-1, -1), 8),
-        ("ALIGN",        (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
-        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [LIGHT_GRAY, colors.white]),
-        ("GRID",         (0, 0), (-1, -1), 0.5, MED_GRAY),
-        ("BOTTOMPADDING",(0, 0), (-1, -1), 5),
-        ("TOPPADDING",   (0, 0), (-1, -1), 5),
+        ("BACKGROUND",    (0, 0), (-1, 0),  HRH_BLUE),
+        ("TEXTCOLOR",     (0, 0), (-1, 0),  colors.white),
+        ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [LIGHT_BLUE, colors.white]),
+        ("GRID",          (0, 0), (-1, -1), 0.5, MED_BLUE),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING",    (0, 0), (-1, -1), 5),
     ]))
     story.append(aging_tbl)
     story.append(Spacer(1, 12))
@@ -145,27 +156,22 @@ def generate_pdf(customer_data, output_path):
     # ── Invoice Detail ───────────────────────────────────────────────────────
     story.append(Paragraph("INVOICE DETAIL", h2_style))
 
-    inv_header = ["Invoice Date", "Invoice #", "Billed To", "Amount Due", "Age", "Pay Here"]
+    # Columns: Invoice Date | Invoice # | Bill Due | Amount Due | Pay Here
+    inv_header = ["Invoice Date", "Invoice #", "Bill Due", "Amount Due", "Pay Here"]
     inv_rows = [inv_header]
 
     for inv in customer_data["invoices"]:
         raw_num = inv["id"]
         display_num = raw_num.lstrip("0") or raw_num
 
-        try:
-            d = date.fromisoformat(inv["date"])
-            date_display = d.strftime("%m/%d/%Y")
-        except Exception:
-            date_display = inv["date"]
-
-        days = inv.get("age_days", 0)
-        age_label = f"{days}d"
+        date_display = _fmt_date(inv.get("date", ""))
+        due_display  = _fmt_date(inv.get("due_date", ""))
 
         pay_url = inv.get("url", "")
         if pay_url:
             pay_cell = Paragraph(
-                f'<link href="{pay_url}"><u>Pay Here</u></link>',
-                ParagraphStyle("link", fontSize=7, textColor=colors.blue)
+                '<link href="' + pay_url + '"><u>Pay Here</u></link>',
+                ParagraphStyle("link", fontSize=7, textColor=HRH_BLUE)
             )
         else:
             pay_cell = Paragraph("—", center_sm)
@@ -173,71 +179,47 @@ def generate_pdf(customer_data, output_path):
         inv_rows.append([
             date_display,
             display_num,
-            inv.get("email", ""),
+            due_display,
             _fmt_money(inv["amount"]),
-            age_label,
             pay_cell,
         ])
 
-        # Line items sub-rows (indented)
-        line_items = inv.get("line_items", [])
-        if line_items:
-            for li in line_items:
-                inv_rows.append([
-                    "",
-                    Paragraph(f'&nbsp;&nbsp;&nbsp;↳ {li["name"]}', small),
-                    f'Qty: {li["quantity"]}',
-                    _fmt_money(li["unit_price"]),
-                    _fmt_money(li["total"]),
-                    "",
-                ])
-        else:
-            inv_rows.append([
-                "",
-                Paragraph("&nbsp;&nbsp;&nbsp;<i>No line item detail available</i>",
-                           ParagraphStyle("gray", fontSize=7, textColor=colors.gray)),
-                "", "", "", "",
-            ])
-
-    # Column widths: Date | Inv# | Email | Amount | Age | Pay
+    # Column widths: Date | Inv# | Due | Amount | Pay
     col_w = [
-        0.9 * inch,
-        0.9 * inch,
-        2.2 * inch,
-        0.9 * inch,
-        0.45 * inch,
-        0.75 * inch,
+        1.1 * inch,   # Invoice Date
+        1.0 * inch,   # Invoice #
+        1.1 * inch,   # Bill Due
+        1.1 * inch,   # Amount Due
+        1.0 * inch,   # Pay Here
     ]
 
     inv_tbl = Table(inv_rows, colWidths=col_w, repeatRows=1)
     inv_style = [
         # Header row
-        ("BACKGROUND",  (0, 0), (-1, 0),  HRH_GREEN),
-        ("TEXTCOLOR",   (0, 0), (-1, 0),  colors.white),
-        ("FONTNAME",    (0, 0), (-1, 0),  "Helvetica-Bold"),
-        ("FONTSIZE",    (0, 0), (-1, -1), 7),
-        ("ALIGN",       (0, 0), (-1, -1), "LEFT"),
-        ("ALIGN",       (3, 0), (3, -1),  "RIGHT"),
-        ("ALIGN",       (4, 0), (4, -1),  "CENTER"),
-        ("ALIGN",       (5, 0), (5, -1),  "CENTER"),
-        ("VALIGN",      (0, 0), (-1, -1), "MIDDLE"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [LIGHT_GRAY, colors.white]),
-        ("GRID",        (0, 0), (-1, -1), 0.25, MED_GRAY),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING",  (0, 0), (-1, -1), 3),
+        ("BACKGROUND",    (0, 0), (-1, 0),  HRH_BLUE),
+        ("TEXTCOLOR",     (0, 0), (-1, 0),  colors.white),
+        ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("ALIGN",         (0, 0), (-1, -1), "LEFT"),
+        ("ALIGN",         (3, 0), (3, -1),  "RIGHT"),   # Amount Due right-aligned
+        ("ALIGN",         (4, 0), (4, -1),  "CENTER"),  # Pay Here centered
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [LIGHT_BLUE, colors.white]),
+        ("GRID",          (0, 0), (-1, -1), 0.25, MED_BLUE),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
     ]
 
-    # Zebra-stripe but keep line-item rows slightly different
     inv_tbl.setStyle(TableStyle(inv_style))
     story.append(inv_tbl)
     story.append(Spacer(1, 14))
 
     # ── Remittance Footer ────────────────────────────────────────────────────
-    story.append(HRFlowable(width="100%", thickness=0.5, color=MED_GRAY,
+    story.append(HRFlowable(width="100%", thickness=0.5, color=MED_BLUE,
                              spaceAfter=6, spaceBefore=4))
     story.append(Paragraph(
-        f"<b>Please remit payment to:</b> {HRH_NAME} | {HRH_EMAIL} | {HRH_PHONE}<br/>"
-        f"Thank you for your business!",
+        "<b>Please remit payment to:</b> " + HRH_NAME + " | " + HRH_EMAIL + " | " + HRH_PHONE + "<br/>"
+        "Thank you for your business!",
         center_sm
     ))
 
