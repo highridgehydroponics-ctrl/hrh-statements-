@@ -35,6 +35,28 @@ DOCS_DIR = os.path.join(os.path.dirname(__file__), "..", "docs")
 PDFS_DIR = os.path.join(DOCS_DIR, "pdfs")
 
 
+def _parse_address(addr_str):
+    """
+    Split a plain US address string into (street, city_state_zip).
+    Strips 'USA' / 'United States' from the end.
+    Returns ("", "") if addr_str is empty.
+    """
+    if not addr_str:
+        return "", ""
+    s = re.sub(r",?\s*(USA|United States)\s*$", "", addr_str.strip(), flags=re.IGNORECASE)
+    # Match "street..., City, ST XXXXX"
+    m = re.search(
+        r"^(.+?),\s*([A-Za-z][A-Za-z .]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?)$", s
+    )
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    # Fall back: split on last comma
+    parts = s.rsplit(",", 1)
+    if len(parts) == 2:
+        return parts[0].strip(), parts[1].strip()
+    return s, ""
+
+
 def safe_filename(name):
     """Convert a name to a safe filename slug."""
     s = re.sub(r"[^\w\s-]", "", name)
@@ -138,6 +160,7 @@ def main():
             customer_email   = ac["email"]
             customer_phone   = ac["phone"]
             customer_address = ac["address"]
+            addr_street, addr_csz = _parse_address(customer_address)
         else:
             # Fallback: pull from Square customer record
             sq_cust_id = invoices[0]["cust_id"] if invoices else ""
@@ -146,9 +169,17 @@ def main():
             customer_email   = sq_info.get("email", "")
             customer_phone   = sq_info.get("phone", "")
             customer_address = sq_info.get("address", "")
+            addr_street      = sq_info.get("address_street", "")
+            addr_csz         = sq_info.get("address_csz", "")
 
         if not customer_name:
             customer_name = key  # last-resort label
+
+        # Email fallback: use Square invoice primary_recipient email if profile email is empty
+        if not customer_email:
+            customer_email = next(
+                (inv.get("email", "") for inv in invoices if inv.get("email")), ""
+            )
 
         # ── Aging buckets ────────────────────────────────────────────────────
         buckets = {"0_30": 0.0, "31_60": 0.0, "61_90": 0.0, "over_90": 0.0}
@@ -168,15 +199,17 @@ def main():
         invoices_sorted = sorted(invoices, key=lambda x: x["date"])
 
         results.append({
-            "key":             key,
-            "appsheet_id":     key if is_appsheet_key else None,
-            "customer_name":   customer_name,
-            "customer_email":  customer_email,
-            "customer_phone":  customer_phone,
-            "customer_address":customer_address,
-            "total":           total,
-            "buckets":         {k: round(v, 2) for k, v in buckets.items()},
-            "invoices":        invoices_sorted,
+            "key":                    key,
+            "appsheet_id":            key if is_appsheet_key else None,
+            "customer_name":          customer_name,
+            "customer_email":         customer_email,
+            "customer_phone":         customer_phone,
+            "customer_address":       customer_address,
+            "customer_address_street": addr_street,
+            "customer_address_csz":    addr_csz,
+            "total":                  total,
+            "buckets":                {k: round(v, 2) for k, v in buckets.items()},
+            "invoices":               invoices_sorted,
         })
 
     # ── Step 6b: Merge groups sharing the same Square customer ID ───────────
