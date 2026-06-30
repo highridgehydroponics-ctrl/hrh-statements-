@@ -41,6 +41,7 @@ sWhiteB  = _ps("whiteB",  fontSize=10, textColor=WHITE, fontName="Helvetica-Bold
 sWhiteR  = _ps("whiteR",  fontSize=10, textColor=WHITE, fontName="Helvetica-Bold", alignment=TA_RIGHT)
 sLink    = _ps("link",    fontSize=9,  textColor=HRH_BLUE, fontName="Helvetica-Bold", alignment=TA_CENTER)
 sSmall   = _ps("small",   fontSize=8,  textColor=GREY)
+sAddr    = _ps("addr",    fontSize=8,  textColor=DARK)
 sStmtLbl = _ps("stmtLbl", fontSize=10, textColor=DARK,  fontName="Helvetica-Bold", alignment=TA_RIGHT)
 sStmtVal = _ps("stmtVal", fontSize=10, textColor=DARK,  alignment=TA_RIGHT)
 sPayable = _ps("payable", fontSize=10, textColor=DARK,  fontName="Helvetica-Bold", alignment=TA_CENTER)
@@ -119,12 +120,13 @@ def generate_pdf(customer_data, output_path):
     # ── Header ───────────────────────────────────────────────────────────────
     farm_info = Table([
         [Paragraph("High Ridge Hydroponics LLC", sCompany)],
-        [Paragraph("1 1/2 Island Brook Ave, BLDG B", sSmall)],
-        [Paragraph("Bridgeport, CT 06606", sSmall)],
+        [Paragraph("1 1/2 Island Brook Ave, BLDG B", sAddr)],
+        [Paragraph("Bridgeport, CT 06606", sAddr)],
     ], colWidths=[4.55 * inch])
     farm_info.setStyle(TableStyle([
         ("TOPPADDING",    (0, 0), (-1, -1), 1),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (0, 0),   8),   # extra gap after company name
     ]))
 
     stmt_info = Table([
