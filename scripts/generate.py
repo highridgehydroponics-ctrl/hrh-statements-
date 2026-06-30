@@ -9,6 +9,7 @@ Pipeline:
   5. Group invoices by AppSheet client_id
      - Fallback: group by Square customer_id if no AppSheet match
   6. Compute aging buckets per customer group
+  6b. Merge groups that share the same Square customer ID (handles split AppSheet records)
   7. Sort by total balance descending, assign statement numbers
   8. Batch-fetch Square order line items
   9. Generate PDFs
@@ -177,6 +178,75 @@ def main():
             "buckets":         {k: round(v, 2) for k, v in buckets.items()},
             "invoices":        invoices_sorted,
         })
+
+    # ── Step 6b: Merge groups sharing the same Square customer ID ───────────
+    # Happens when a customer has two AppSheet client records (e.g. data entry duplicate).
+    # Group results by Square cust_id, then consolidate any multi-group customers.
+    sq_cust_buckets = defaultdict(list)
+    for r in results:
+        # Collect the set of Square customer IDs used by this group's invoices
+        sq_ids = set(inv["cust_id"] for inv in r["invoices"] if inv.get("cust_id"))
+        if len(sq_ids) == 1:
+            sq_cust_buckets[next(iter(sq_ids))].append(r)
+        else:
+            # Mixed Square customers within one group — don't merge, keep as-is
+            sq_cust_buckets[f"__mixed_{r['key']}"].append(r)
+
+    merged_results = []
+    for sq_id, group_list in sq_cust_buckets.items():
+        if len(group_list) == 1:
+            merged_results.append(group_list[0])
+            continue
+
+        # Merge: pick the record with the most contact info as primary
+        primary = max(
+            group_list,
+            key=lambda r: len(
+                (r.get("customer_email") or "")
+                + (r.get("customer_phone") or "")
+                + (r.get("customer_address") or "")
+            ),
+        )
+        print(
+            f"  Merging {len(group_list)} statements for Square customer "
+            f"{sq_id} → '{primary['customer_name']}'"
+        )
+
+        # Combine all invoices, deduplicate by invoice_id
+        all_invs = [inv for r in group_list for inv in r["invoices"]]
+        seen = set()
+        unique_invs = []
+        for inv in all_invs:
+            if inv["invoice_id"] not in seen:
+                seen.add(inv["invoice_id"])
+                unique_invs.append(inv)
+        unique_invs.sort(key=lambda x: x["date"])
+
+        # Recompute total and aging buckets
+        merged_total = round(sum(inv["amount"] for inv in unique_invs), 2)
+        merged_buckets = {"0_30": 0.0, "31_60": 0.0, "61_90": 0.0, "over_90": 0.0}
+        for inv in unique_invs:
+            days = inv.get("age_days", 0)
+            if days <= 30:
+                merged_buckets["0_30"] += inv["amount"]
+            elif days <= 60:
+                merged_buckets["31_60"] += inv["amount"]
+            elif days <= 90:
+                merged_buckets["61_90"] += inv["amount"]
+            else:
+                merged_buckets["over_90"] += inv["amount"]
+
+        primary["invoices"] = unique_invs
+        primary["total"] = merged_total
+        primary["buckets"] = {k: round(v, 2) for k, v in merged_buckets.items()}
+        merged_results.append(primary)
+
+    if len(merged_results) < len(results):
+        print(
+            f"  Merged {len(results)} groups → {len(merged_results)} statements "
+            f"(collapsed {len(results) - len(merged_results)} duplicate(s))"
+        )
+    results = merged_results
 
     # ── Step 7: Sort by total descending, assign statement numbers ────────────
     results.sort(key=lambda x: x["total"], reverse=True)
