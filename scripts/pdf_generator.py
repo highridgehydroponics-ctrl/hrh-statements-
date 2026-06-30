@@ -19,7 +19,8 @@ HRH_BLUE    = colors.HexColor("#1565C0")
 LIGHT_BLUE  = colors.HexColor("#E3F2FD")
 MID_BLUE    = colors.HexColor("#BBDEFB")
 WHITE       = colors.white
-DARK        = colors.HexColor("#1A1A1A")
+BLACK       = colors.black
+DARK        = colors.black          # alias — keep name for any leftover refs
 GREY        = colors.HexColor("#555555")
 LIGHT_GREY  = colors.HexColor("#F5F5F5")
 
@@ -55,6 +56,19 @@ def _fmt_date(d):
         return f"{d[5:7]}/{d[8:10]}/{d[:4]}"
     except Exception:
         return d or "—"
+
+
+def _fmt_phone(raw):
+    """Normalize any US phone string to (XXX) XXX-XXXX."""
+    import re
+    if not raw:
+        return raw
+    digits = re.sub(r"\D", "", raw)
+    if digits.startswith("1") and len(digits) == 11:
+        digits = digits[1:]
+    if len(digits) == 10:
+        return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+    return raw  # unrecognized format — return as-is
 
 
 def _fmt_money(val):
@@ -174,7 +188,7 @@ def generate_pdf(customer_data, output_path):
         # Fallback: no structured data available
         bill_rows.append([Paragraph(address, sNorm)])
     if phone:
-        bill_rows.append([Paragraph(phone, sNorm)])
+        bill_rows.append([Paragraph(_fmt_phone(phone), sNorm)])
     if email:
         bill_rows.append([Paragraph(email, sNorm)])
 
