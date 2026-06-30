@@ -75,15 +75,21 @@ def main():
         print(f"  WARNING: Could not fetch AppSheet clients: {e}")
         appsheet_clients = {}
 
-    # ── Step 4: Enrich each invoice with AppSheet client_id ──────────────────
+    # ── Step 4: Enrich each invoice with AppSheet client_id + sent_at ──────────
     for inv in all_invoices:
         inv_num = inv["id"].lstrip("0") or inv["id"]  # strip leading zeros for lookup
         # Try exact match first, then zero-stripped match
-        appsheet_cid = (
+        map_entry = (
             inv_client_map.get(inv["id"])
             or inv_client_map.get(inv_num)
         )
-        inv["appsheet_client_id"] = appsheet_cid
+        if isinstance(map_entry, dict):
+            inv["appsheet_client_id"] = map_entry.get("client_id")
+            inv["sent_at"]            = map_entry.get("sent_at", "")
+        else:
+            # Fallback for older mapping format (plain string)
+            inv["appsheet_client_id"] = map_entry if isinstance(map_entry, str) else None
+            inv["sent_at"]            = ""
 
     # ── Step 5: Group by AppSheet client_id (with fallback) ──────────────────
     # Primary key: appsheet_client_id
