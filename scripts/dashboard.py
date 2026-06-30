@@ -109,7 +109,7 @@ def generate_dashboard(results, output_path):
     customers_json = json.dumps(customers_list, ensure_ascii=False, indent=2)
 
     # GitHub Actions URL — opens the manual trigger page
-    gh_actions_url = "https://github.com/highridgehydroponics-ctrl/hrh-statements/actions/workflows/generate.yml"
+    gh_actions_url = "https://github.com/highridgehydroponics-ctrl/hrh-statements-/actions/workflows/generate.yml"
 
     html = (
         "<!DOCTYPE html>\n"
