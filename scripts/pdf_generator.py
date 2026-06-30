@@ -154,16 +154,24 @@ def generate_pdf(customer_data, output_path):
             Spacer(1, 0.15 * inch)]
 
     # ── Bill To + Aging ───────────────────────────────────────────────────────
-    name    = customer_data["customer_name"]
-    address = customer_data.get("customer_address", "")
-    phone   = customer_data.get("customer_phone", "")
-    email   = customer_data.get("customer_email", "")
+    name        = customer_data["customer_name"]
+    addr_street = customer_data.get("customer_address_street", "")
+    addr_csz    = customer_data.get("customer_address_csz", "")
+    address     = customer_data.get("customer_address", "")
+    phone       = customer_data.get("customer_phone", "")
+    email       = customer_data.get("customer_email", "")
 
     bill_rows = [
         [Paragraph("<b>Bill To:</b>", sBold)],
         [Paragraph(name, sNorm)],
     ]
-    if address:
+    # Street address on its own line, then City, State ZIP on the next
+    if addr_street:
+        bill_rows.append([Paragraph(addr_street, sNorm)])
+    if addr_csz:
+        bill_rows.append([Paragraph(addr_csz, sNorm)])
+    elif address and not addr_street:
+        # Fallback: no structured data available
         bill_rows.append([Paragraph(address, sNorm)])
     if phone:
         bill_rows.append([Paragraph(phone, sNorm)])
@@ -260,7 +268,10 @@ def generate_pdf(customer_data, output_path):
     payable_tbl = Table([
         [Paragraph("Please make checks payable to:", sPayable)],
         [Paragraph("<b>High Ridge Hydroponics LLC</b>", sPayable)],
-        [Paragraph("1 1/2 Island Brook Ave, BLDG B  —  Bridgeport, CT 06606", sPayAddr)],
+        [Paragraph("1 1/2 Island Brook Ave,", sPayAddr)],
+        [Paragraph("BLDG B", sPayAddr)],
+        [Paragraph("Bridgeport, CT", sPayAddr)],
+        [Paragraph("06606", sPayAddr)],
     ], colWidths=[7.2 * inch])
     payable_tbl.setStyle(TableStyle([
         ("TOPPADDING",    (0, 0), (-1, -1), 2),
