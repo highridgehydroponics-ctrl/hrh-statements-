@@ -137,20 +137,38 @@ def get_customer(customer_id):
     data = _square_get(f"/customers/{customer_id}")
     c = data.get("customer", {})
     address = c.get("address", {})
-    addr_line = ", ".join(filter(None, [
+
+    # Street: line1 + line2 only (no city/state/zip/country)
+    addr_street = ", ".join(filter(None, [
         address.get("address_line_1", ""),
         address.get("address_line_2", ""),
-        address.get("locality", ""),
-        address.get("administrative_district_level_1", ""),
-        address.get("postal_code", ""),
     ]))
+
+    # City, State ZIP on its own line — no country
+    city  = address.get("locality", "")
+    state = address.get("administrative_district_level_1", "")
+    zcode = address.get("postal_code", "")
+    if city and state and zcode:
+        addr_csz = f"{city}, {state} {zcode}"
+    elif city and state:
+        addr_csz = f"{city}, {state}"
+    elif city:
+        addr_csz = city
+    else:
+        addr_csz = ""
+
+    given  = c.get("given_name", "")
+    family = c.get("family_name", "")
+    full_name = " ".join(filter(None, [given, family])).strip() or c.get("company_name", "")
+
     return {
-        "name":    " ".join(filter(None, [c.get("given_name", ""), c.get("family_name", "")])).strip()
-                   or c.get("company_name", ""),
-        "company": c.get("company_name", ""),
-        "email":   c.get("email_address", ""),
-        "phone":   c.get("phone_number", ""),
-        "address": addr_line,
+        "name":           full_name,
+        "company":        c.get("company_name", ""),
+        "email":          c.get("email_address", ""),
+        "phone":          c.get("phone_number", ""),
+        "address":        ", ".join(filter(None, [addr_street, addr_csz])),
+        "address_street": addr_street,
+        "address_csz":    addr_csz,
     }
 
 
