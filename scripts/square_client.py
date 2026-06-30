@@ -67,6 +67,11 @@ def _normalize_invoice(inv):
         for req in payment_reqs
     )
 
+    # Due date from the first payment request (YYYY-MM-DD)
+    due_date = ""
+    if payment_reqs:
+        due_date = payment_reqs[0].get("due_date", "") or ""
+
     # Invoice date: prefer scheduled_at, fall back to created_at
     raw_date = inv.get("scheduled_at") or inv.get("created_at", "")
     try:
@@ -78,6 +83,7 @@ def _normalize_invoice(inv):
         "invoice_id":  inv.get("id", ""),
         "id":          inv.get("invoice_number", ""),   # e.g. "0004765914"
         "date":        date_str,
+        "due_date":    due_date,
         "amount":      round(balance, 2),
         "url":         inv.get("public_url", ""),
         "status":      inv.get("status", ""),
@@ -242,16 +248,21 @@ def get_appsheet_clients():
 def get_appsheet_invoice_client_map():
     """
     Fetch AppSheet orders that have invoice_number set.
-    Returns dict: {square_invoice_number: appsheet_client_id}
+    Returns dict: {square_invoice_number: {"client_id": str, "sent_at": str}}
 
     This is the critical link: Square invoice → AppSheet order → AppSheet client.
+    sent_at is the sent_datetime field written back when the invoice was published
+    (format: MM/DD/YYYY HH:MM:SS, or empty string if not yet sent).
     """
     rows = _appsheet_find("order")
     mapping = {}
     for r in rows:
-        inv_num = (r.get("invoice_number") or "").strip()
-        client_id = (r.get("client") or "").strip()
+        inv_num   = (r.get("invoice_number") or "").strip()
+        client_id = (r.get("client")         or "").strip()
+        sent_at   = (r.get("sent_datetime")  or "").strip()
         if inv_num and client_id:
-            # invoice_number in AppSheet matches the Square invoice's invoice_number field
-            mapping[inv_num] = client_id
+            mapping[inv_num] = {
+                "client_id": client_id,
+                "sent_at":   sent_at,
+            }
     return mapping
